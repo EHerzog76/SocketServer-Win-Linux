@@ -87,7 +87,8 @@ void usage_daemon(char *prog_name)
 	printf("  -w  \tWindowsize, how many Data-Packet can be sent without an Ack-Packet, 0=disabled.\n");
 	printf("  -t  \tReceive-Timeout in msec, default=1000msec.\n");
 	printf("  -T  \tNumber of Threads to use. If not specified the number of Threads will be calculated by the number of CPUs.\n");
-	printf("  -N  \tenable Receive-Notify RIONotify will be enabled.\n");
+	printf("  -N  \tenable Receive-Notify RIONotify will be enabled and also Check Sendresults -C.\n");
+	printf("  -C  \tCheck and wait for local Sendresults.\n");
 	printf("  -d  \tEnable debug\n");
 	//printf("  -r  \tRefresh time (in seconds)\n");
 	printf("\n");
@@ -112,6 +113,7 @@ int main(int argc, char **argv) {
 	/* set Defaults */
 	runTime = 0;
 	bNotify = FALSE;
+	bSndChkResult = FALSE;
 	strlcpy(listener_ip, "0.0.0.0", 256);
 	memset(dst_ip, 0, sizeof(dst_ip));
 	listener_port = 0;
@@ -187,6 +189,9 @@ int main(int argc, char **argv) {
 		case 'N':
 			bNotify = TRUE;
 			break;
+		case 'C':
+			bSndChkResult = TRUE;
+			break;
 		case 'w':
 			strlcpy(strTemp, optarg, SRVBUFLEN);
 			WndSize = atoi(strTemp);
@@ -212,11 +217,13 @@ int main(int argc, char **argv) {
 	else
 		printf("\tProto: UDP\n");
 	if (bNotify) {
-		printf("RIO-Notify is enalbed.\n");
+		printf("\tRIO-Notify is enalbed.\n");
 		recvTimeout = INFINITE;	//GetQueuedCompletionStatus with Timeout ends in a RIONotify-Error 258 (Timeout-Error)
 	}
 	else
 		printf("RIO-Notify is disabled for Receive.\n");
+	if (bSndChkResult)
+		printf("\tCheck Sendresults is enabled.\n");
 	if (dst_ip[0] == '\0') {
 		OPMode = OP_SERVERONLY;
 		printf("\tServer-Mode listen on %s:%d\n", listener_ip, listener_port);
@@ -393,14 +400,18 @@ ULONG netSend(RIO_EXTENSION_FUNCTION_TABLE *pFNTable, RIORESULT *sendResults, HA
 		nResults = pFNTable->RIODequeueCompletion(CQ_Send, sendResults, RIO_MAX_RESULTS);
 	}
 	else {
-		do {
-			nResults = pFNTable->RIODequeueCompletion(CQ_Send, sendResults, RIO_MAX_RESULTS);
-			/* if (nResults == 0)
-				YieldProcessor();
-			else
-				break;
-			*/
-		} while (nResults == 0);
+		if (bSndChkResult) {
+			do {
+				nResults = pFNTable->RIODequeueCompletion(CQ_Send, sendResults, RIO_MAX_RESULTS);
+				/* if (nResults == 0)
+					YieldProcessor();
+				else
+					break;
+				*/
+			} while (nResults == 0);
+		}
+		else
+			nResults = 1;
 	}
 
 	return(nResults);
@@ -847,16 +858,11 @@ void* WorkerThread(void* ThreadParam) {
 						//Receive-Timeout reached
 						bRecvTimeOut = 1;
 
-						//Is not supported !
-						//  RIONotify will throw a Timeout-Error 258
 						PostQueuedCompletionStatus(hIOCPRecv, 0, CK_CONTINUE, 0);
 
 						if ((OPMode == OP_CLIENT) || (OPMode == OP_CLIENTONLY)) {
-							if(localClient.PktNr > 0)
-								localClient.PktNr--;
-
 							if (next_CMD == CMD_WAIT_4_ACK)
-								next_CMD = CMD_NONE;
+								next_CMD = OP_RESEND;
 							next_OPType = OP_SEND;
 						}
 						//Reset RIOBufferIndex for Addr-Buffers
@@ -904,11 +910,8 @@ void* WorkerThread(void* ThreadParam) {
 
 				if (bRecvTimeOut) {
 					if ((OPMode == OP_CLIENT) || (OPMode == OP_CLIENTONLY)) {
-						if (localClient.PktNr > 0)
-							localClient.PktNr--;
-
 						if (next_CMD == CMD_WAIT_4_ACK)
-							next_CMD = CMD_NONE;
+							next_CMD = OP_RESEND;
 						next_OPType = OP_SEND;
 					}
 					//Reset RIOBufferIndex for Addr-Buffers
@@ -967,11 +970,17 @@ void* WorkerThread(void* ThreadParam) {
 					else {
 						//Client-Statistics
 						objClient->pktCounter++;
+
+						PktNr = pm_ntohll(((PKT_HEADER *)recvOffset)->PktNr);
 						if (((PKT_HEADER *)recvOffset)->PktType == (char)PKT_ACK) {
-							objClient->lastActPkt = objClient->PktNr;
+							objClient->lastActPkt = PktNr;
+
+							if (debug)
+								printf("INFO: Ack for PktNr.: %d received.\n", PktNr);
 						}
 						else {
-							PktNr = pm_ntohll(((PKT_HEADER *)recvOffset)->PktNr);
+							if (debug)
+								printf("INFO: PktNr.: %d received.\n", PktNr);
 
 							//Set Target-Address:
 							l_addrRioBufIndex++;
@@ -997,28 +1006,37 @@ void* WorkerThread(void* ThreadParam) {
 									((PKT_HEADER*)sendOffset)->ThrNr = htonl(ThreadInfo->ThreadNr);
 									((PKT_HEADER*)sendOffset)->PktLength = htonll(0);
 									numSendResults = netSend(&l_rio, sendResults, hIOCPSend, completionQueue_Send, l_requestQueue, sendBuf, NULL, pAddrBufs, bNotify);
-									if (0 == numSendResults || RIO_CORRUPT_CQ == numSendResults)
-									{
-										printf_s("RIODequeueCompletion Error: %d\n", GetLastError());
-										ExitCode = 1;
-										next_CMD = CMD_EXIT_MAINLOOP;
-										break;
+									if (bNotify || bSndChkResult) {
+										if (0 == numSendResults || RIO_CORRUPT_CQ == numSendResults)
+										{
+											printf_s("RIODequeueCompletion Error: %d\n", GetLastError());
+											ExitCode = 1;
+											next_CMD = CMD_EXIT_MAINLOOP;
+											break;
+										}
+										for (i = 0; i < numSendResults; i++) {
+											if (sendResults[i].Status != 0) {
+												localClient.errCounter++;
+
+												printf("Error: Sending data failed !\n");
+												//next_OPType = last_OPType;
+											}
+											else {
+												objClient->lastActPkt = objClient->PktNr;
+
+												if (debug)
+													printf("INFO: Ack-Packet %d sent.\n", objClient->PktNr);
+												ThreadInfo->SendCounter++;
+												ThreadInfo->SendBytes += ((EXTENDED_RIO_BUF*)sendResults[i].RequestContext)->Length;
+											}
+										}
 									}
-									for (i = 0; i < numSendResults; i++) {
-										if (sendResults[i].Status != 0) {
-											localClient.errCounter++;
+									else {
+										ThreadInfo->SendCounter++;
+										ThreadInfo->SendBytes += PktSize;
 
-											printf("Error: Sending data failed !\n");
-											//next_OPType = last_OPType;
-										}
-										else {
-											objClient->lastActPkt = objClient->PktNr;
-
-											if (debug)
-												printf("INFO: 1 Ack-Packet sent.\n");
-											ThreadInfo->SendCounter++;
-											ThreadInfo->SendBytes += ((EXTENDED_RIO_BUF*)sendResults[i].RequestContext)->Length;
-										}
+										if (debug)
+											printf("INFO: Ack-Packet %d sent.\n", objClient->PktNr);
 									}
 								} //if(WndSize)
 								else {
@@ -1031,9 +1049,10 @@ void* WorkerThread(void* ThreadParam) {
 							}
 							else {
 								objClient->PktNr = PktNr;
-								if (WndSize && (
+								if ((WndSize && (
 									((objClient->PktNr - objClient->lastActPkt) >= WndSize)) ||
-									((objClient->lastActPkt > objClient->PktNr) && (objClient->PktNr >= WndSize)) ) {
+									((objClient->lastActPkt > objClient->PktNr) && (objClient->PktNr >= WndSize)) ) ||
+									(((PKT_HEADER *)recvOffset)->PktType == (char)PKT_DATARETRANSMIT) ) {
 									//	Send Ack-Packet back to Client
 									l_sendRioBufIndex++;
 									sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
@@ -1045,28 +1064,37 @@ void* WorkerThread(void* ThreadParam) {
 									((PKT_HEADER*)sendOffset)->ThrNr = htonl(ThreadInfo->ThreadNr);
 									((PKT_HEADER*)sendOffset)->PktLength = htonll(0);
 									numSendResults = netSend(&l_rio, sendResults, hIOCPSend, completionQueue_Send, l_requestQueue, sendBuf, NULL, pAddrBufs, bNotify);
-									if (0 == numSendResults || RIO_CORRUPT_CQ == numSendResults)
-									{
-										printf_s("RIODequeueCompletion Error: %d\n", GetLastError());
-										ExitCode = 1;
-										next_CMD = CMD_EXIT_MAINLOOP;
-										break;
+									if (bNotify || bSndChkResult) {
+										if (0 == numSendResults || RIO_CORRUPT_CQ == numSendResults)
+										{
+											printf_s("RIODequeueCompletion Error: %d\n", GetLastError());
+											ExitCode = 1;
+											next_CMD = CMD_EXIT_MAINLOOP;
+											break;
+										}
+										for (i = 0; i < numSendResults; i++) {
+											if (sendResults[i].Status != 0) {
+												localClient.errCounter++;
+
+												printf("Error: Sending data failed !\n");
+												//next_OPType = last_OPType;
+											}
+											else {
+												objClient->lastActPkt = objClient->PktNr;
+
+												if (debug)
+													printf("INFO: Ack-Packet %d sent.\n", objClient->PktNr);
+												ThreadInfo->SendCounter++;
+												ThreadInfo->SendBytes += ((EXTENDED_RIO_BUF*)sendResults[i].RequestContext)->Length;
+											}
+										}
 									}
-									for (i = 0; i < numSendResults; i++) {
-										if (sendResults[i].Status != 0) {
-											localClient.errCounter++;
+									else {
+										ThreadInfo->SendCounter++;
+										ThreadInfo->SendBytes += PktSize;
 
-											printf("Error: Sending data failed !\n");
-											//next_OPType = last_OPType;
-										}
-										else {
-											objClient->lastActPkt = objClient->PktNr;
-
-											if (debug)
-												printf("INFO: 1 Ack-Packet sent.\n");
-											ThreadInfo->SendCounter++;
-											ThreadInfo->SendBytes += ((EXTENDED_RIO_BUF*)sendResults[i].RequestContext)->Length;
-										}
+										if (debug)
+											printf("INFO: Ack-Packet %d sent.\n", objClient->PktNr);
 									}
 								}
 							}
@@ -1078,6 +1106,9 @@ void* WorkerThread(void* ThreadParam) {
 						if (((PKT_HEADER *)recvOffset)->PktType == (char)PKT_ACK) {
 							PktNr = pm_ntohll(((PKT_HEADER *)recvOffset)->PktNr);
 							localClient.lastActPkt = PktNr;
+
+							if (debug)
+								printf("INFO: Ack for PktNr.: %d received.\n", PktNr);
 
 							//if (localClient.lastActPkt < localClient.PktNr) {
 								//We have lost Packets...
@@ -1119,29 +1150,14 @@ void* WorkerThread(void* ThreadParam) {
 			addrOffset = l_addrBufferPointer + pAddrBufs->Offset;
 			memcpy_s(addrOffset, ADDR_BUFFER_SIZE, &remoteServer, sizeof(remoteServer));
 
-			//ToDo:
-			//	if RIO_PENDING_SENDS < l  => Need more RIOSendEx-Cycles
-			if (PktSize > SEND_BUFFER_SIZE) {
-				l = PktSize / SEND_BUFFER_SIZE;
-				if ((l* SEND_BUFFER_SIZE) < PktSize) {
-					saved = PktSize - (l* SEND_BUFFER_SIZE);
-					l++;
-				}
-				rc = SEND_BUFFER_SIZE;
-			}
-			else {
-				l = 1;
-				rc = PktSize;
-			}
-			offset = 0;
-			for (i = 0; i < l; i++) {
+			if (next_CMD == OP_RESEND) {
 				l_sendRioBufIndex++;
 				sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
 				sendOffset = l_sendBufferPointer + sendBuf->Offset;
-				memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer + offset, rc);
+				memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer, SEND_BUFFER_SIZE);
 
-				((PKT_HEADER*)sendOffset)->PktType = (char)PKT_DATA;
-				((PKT_HEADER*)sendOffset)->PktNr = htonll(localClient.PktNr + 1 + i);
+				((PKT_HEADER*)sendOffset)->PktType = (char)PKT_DATARETRANSMIT;
+				((PKT_HEADER*)sendOffset)->PktNr = htonll(localClient.PktNr);
 				((PKT_HEADER*)sendOffset)->ThrNr = htonl(ThreadInfo->ThreadNr);
 				((PKT_HEADER*)sendOffset)->PktLength = htonll(PktSize);
 
@@ -1150,9 +1166,65 @@ void* WorkerThread(void* ThreadParam) {
 					printf_s("RIOSend Error: %d\n", GetLastError());
 					pthread_exit(1);
 				}
-				offset += rc;
-				if ((i + 1) == l)
-					rc = saved;
+				else if (debug)
+					printf("INFO: PktNr.: %d will be resent.\n", localClient.PktNr);
+
+				localClient.pktCounter++;
+				ThreadInfo->SendCounter++;
+				ThreadInfo->SendBytes += PktSize;
+
+				next_CMD = CMD_WAIT_4_ACK;
+				next_OPType = OP_RECV;
+			}
+			else {
+				//ToDo:
+				//	if RIO_PENDING_SENDS < l  => Need more RIOSendEx-Cycles
+				if (PktSize > SEND_BUFFER_SIZE) {
+					l = PktSize / SEND_BUFFER_SIZE;
+					if ((l* SEND_BUFFER_SIZE) < PktSize) {
+						saved = PktSize - (l* SEND_BUFFER_SIZE);
+						l++;
+					}
+					rc = SEND_BUFFER_SIZE;
+				}
+				else {
+					l = 1;
+					rc = PktSize;
+				}
+				offset = 0;
+				for (i = 0; i < l; i++) {
+					l_sendRioBufIndex++;
+					sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
+					sendOffset = l_sendBufferPointer + sendBuf->Offset;
+					memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer + offset, rc);
+
+					((PKT_HEADER*)sendOffset)->PktType = (char)PKT_DATA;
+					((PKT_HEADER*)sendOffset)->PktNr = htonll(localClient.PktNr + 1 + i);
+					((PKT_HEADER*)sendOffset)->ThrNr = htonl(ThreadInfo->ThreadNr);
+					((PKT_HEADER*)sendOffset)->PktLength = htonll(PktSize);
+
+					if (!l_rio.RIOSendEx(l_requestQueue, sendBuf, 1, NULL, pAddrBufs, NULL, NULL, l_Flags, sendBuf))
+					{
+						printf_s("RIOSend Error: %d\n", GetLastError());
+						pthread_exit(1);
+					}
+					else if (debug)
+						printf("INFO: PktNr.: %d will be sent.\n", localClient.PktNr + 1 + i);
+
+					localClient.pktCounter++;
+					localClient.PktNr++;
+					ThreadInfo->SendCounter++;
+					ThreadInfo->SendBytes += PktSize;
+
+					if (WndSize && ((localClient.PktNr - localClient.lastActPkt) >= WndSize)) {
+						next_CMD = CMD_WAIT_4_ACK;
+						next_OPType = OP_RECV;
+					}
+
+					offset += rc;
+					if ((i + 1) == l)
+						rc = saved;
+				}
 			}
 			if (bNotify) {
 				//Notify for Sending-Ready
@@ -1185,14 +1257,18 @@ void* WorkerThread(void* ThreadParam) {
 				numSendResults = l_rio.RIODequeueCompletion(completionQueue_Send, sendResults, RIO_MAX_RESULTS);
 			}
 			else {
-				do {
-					numSendResults = l_rio.RIODequeueCompletion(completionQueue_Send, sendResults, RIO_MAX_RESULTS);
-					/* if (numSendResults == 0)
-						YieldProcessor();
-					else
-						break;
-					*/
-				} while (numSendResults == 0);
+				if (bSndChkResult) {
+					do {
+						numSendResults = l_rio.RIODequeueCompletion(completionQueue_Send, sendResults, RIO_MAX_RESULTS);
+						/* if (numSendResults == 0)
+							YieldProcessor();
+						else
+							break;
+						*/
+					} while (numSendResults == 0);
+				}
+				else
+					numSendResults = 1;
 			}
 			if (0 == numSendResults || RIO_CORRUPT_CQ == numSendResults)
 			{
@@ -1201,28 +1277,31 @@ void* WorkerThread(void* ThreadParam) {
 				next_CMD = CMD_EXIT_MAINLOOP;
 				break;
 			}
-			for (i = 0; i < numSendResults; i++) {
-				if (sendResults[i].Status != 0) {
-					localClient.errCounter++;
+			if (bNotify || bSndChkResult) {
+				//Check Sendresults
+				for (i = 0; i < numSendResults; i++) {
+					if (sendResults[i].Status != 0) {
+						localClient.errCounter++;
 
-					printf("Error: Sending data failed !\n");
-					//next_OPType = last_OPType;
-				}
-				else {
-					if (debug)
-						printf("INFO: %d Packets sent, %d Bytes sent.\n", numSendResults, sendResults[0].BytesTransferred);
-					//if (next_OPType == OP_SENDRECV)
-					//	next_OPType = OP_RECVRESP;
+						printf("Error: Sending data failed !\n");
+						//next_OPType = last_OPType;
+					}
+					else {
+						if (debug)
+							printf("INFO: %d Packets sent, %d Bytes sent.\n", numSendResults, sendResults[0].BytesTransferred);
 
-					localClient.pktCounter++;
-					localClient.PktNr++;
-					ThreadInfo->SendCounter++;
-					pBuffer = sendResults[i].RequestContext;
-					ThreadInfo->SendBytes += pBuffer->Length;
-					
-					if (WndSize && ((localClient.pktCounter - localClient.lastActPkt) >= WndSize)) {
-						next_CMD = CMD_WAIT_4_ACK;
-						next_OPType = OP_RECV;
+						/*
+						localClient.pktCounter++;
+						localClient.PktNr++;
+						ThreadInfo->SendCounter++;
+						pBuffer = sendResults[i].RequestContext;
+						ThreadInfo->SendBytes += pBuffer->Length;
+
+						if (WndSize && ((localClient.PktNr - localClient.lastActPkt) >= WndSize)) {
+							next_CMD = CMD_WAIT_4_ACK;
+							next_OPType = OP_RECV;
+						}
+						*/
 					}
 				}
 			}

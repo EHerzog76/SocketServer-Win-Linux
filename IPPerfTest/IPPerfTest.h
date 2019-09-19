@@ -69,7 +69,7 @@ POSIX_ONLY(#include <sys/mman.h>)
 #include "tommyhashlin.h"
 
 /* defines */
-#define ARGS_IPPERF "n:dhVNY:P:L:p:S:s:l:w:T:t:"
+#define ARGS_IPPERF "n:dhVNYC:P:L:p:S:s:l:w:T:t:"
 #define PKT_SIZE		1400
 #define ETH_ADDR_LEN    	6               /* Octets in one ethernet addr   */
 #define ETHER_HDRLEN    	14
@@ -136,6 +136,7 @@ typedef enum _OPERATION_TYPE
 	OP_NONE,
 	OP_RECV,
 	OP_SEND,
+	OP_RESEND,
 	OP_RECVRESP,
 	OP_SENDRECV
 } OPERATION_TYPE;
@@ -153,7 +154,9 @@ typedef enum _CMD {
 typedef enum _PKT_TYPE
 {
 	PKT_ACK,
-	PKT_DATA
+	PKT_REACK,
+	PKT_DATA,
+	PKT_DATARETRANSMIT
 } PKT_TYPE;
 
 #ifdef _WIN32
@@ -274,6 +277,7 @@ EXT OPERATION_MODE OPMode;
 #ifdef _WIN32
 SOCKET MainSock;
 EXT int bNotify;
+EXT int bSndChkResult;
 EXT ULONG netSend(RIO_EXTENSION_FUNCTION_TABLE *, RIORESULT *, HANDLE, RIO_CQ, RIO_RQ, PRIO_BUF, PRIO_BUF, PRIO_BUF, BOOL);
 #else
 int MainSock;
