@@ -7,10 +7,10 @@
 #include "IPPerfTest.h"
 
 #ifdef _WIN32
-static const DWORD RIO_PENDING_RECVS = 100;
-static const DWORD RIO_PENDING_SENDS = 100;
+static const DWORD RIO_PENDING_RECVS = 10;
+static const DWORD RIO_PENDING_SENDS = 10;
 static const DWORD ADDR_BUFFER_SIZE = 64;
-static const DWORD RIO_MAX_RESULTS = 100;
+static const DWORD RIO_MAX_RESULTS = 10;
 
 static const DWORD RECV_BUFFER_SIZE = 9000;
 static const DWORD SEND_BUFFER_SIZE = 9000;
@@ -130,13 +130,6 @@ int main(int argc, char **argv) {
 	maxThreads = 0;
 	NrCPUs = getCPUs();
 
-	//for Debug-Testing ONLY !!!
-	//strcpy(dst_ip, "10.0.21.23");
-	//listener_port = 3000;
-	//maxThreads = 1;
-	//debug = TRUE;
-
-
 	/* getting commandline values */
 	while (!errflag && ((cp = getopt(argc, argv, ARGS_IPPERF)) != -1)) {
 		switch (cp) {
@@ -218,7 +211,6 @@ int main(int argc, char **argv) {
 		printf("\tProto: UDP\n");
 	if (bNotify) {
 		printf("\tRIO-Notify is enalbed.\n");
-		recvTimeout = INFINITE;	//GetQueuedCompletionStatus with Timeout ends in a RIONotify-Error 258 (Timeout-Error)
 	}
 	else
 		printf("RIO-Notify is disabled for Receive.\n");
@@ -239,6 +231,10 @@ int main(int argc, char **argv) {
 	}
 	printf("\tUse %d Threads\n", maxThreads);
 	printf("\tWndSize: %d\n", WndSize);
+	if(recvTimeout == INFINITE)
+		printf("\tRecv-Timeout: NO, no retransmits are possible!\n");
+	else
+		printf("\tRecv-Timeout: %d\n", recvTimeout);
 	if (debug)
 		printf("\tDebug-Mode is enabled.\n");
 
@@ -543,7 +539,10 @@ void* WorkerThread(void* ThreadParam) {
 	//	or
 	//int cpu = 1;
 	//setsockopt(fd, SOL_SOCKET, SO_INCOMING_CPU, &cpu, sizeof(cpu));
-
+#else
+	//Set Receivetimeout on Socket
+	//if(recvTimeout)
+	//	rc = setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&recvTimeout, sizeof(recvTimeout));
 #endif // !_WIN32
 
 	if (PROTO == SOCK_STREAM) {
@@ -614,6 +613,7 @@ void* WorkerThread(void* ThreadParam) {
 	DWORD numberOfBytes = 0, l_Flags = 0;
 	ULONG_PTR completionKey = 0;
 	OVERLAPPED* pOverlapped = 0;
+	OVERLAPPED rcvOverlapped;
 	RIORESULT *results, *sendResults;
 	ULONG numResults = 0, numSendResults = 0;
 	EXTENDED_RIO_BUF* pBuffer = NULL, *sendBuf = NULL, *pRecvBufs = NULL, *pAddrBufs = NULL;
@@ -828,12 +828,14 @@ void* WorkerThread(void* ThreadParam) {
 		switch (next_OPType) {
 		case OP_RECV:
 			bRecvTimeOut = 0;
-			pRecvBufs = &(l_recvRioBufs[l_recvRioBufIndex]);
-			recvOffset = l_recvBufferPointer + pRecvBufs->Offset;
-			//memset(recvOffset, 0, RECV_BUFFER_SIZE);
 
 			if (!bRecvActive) {
 				bRecvActive = 1;
+
+				pRecvBufs = &(l_recvRioBufs[l_recvRioBufIndex]);
+				recvOffset = l_recvBufferPointer + pRecvBufs->Offset;
+				//memset(recvOffset, 0, RECV_BUFFER_SIZE);
+
 				if (!l_rio.RIOReceiveEx(l_requestQueue, pRecvBufs, 1, NULL, &l_addrRioBufs[l_addrRioBufIndex], NULL, 0, l_Flags, pRecvBufs))
 				{
 					printf_s("RIOReceive Error: %d\n", GetLastError());
@@ -843,31 +845,32 @@ void* WorkerThread(void* ThreadParam) {
 				}
 			}
 			if (bNotify) {
-				notifyResult = l_rio.RIONotify(completionQueue_Recv);
-				if (notifyResult != ERROR_SUCCESS)
-				{
-					printf_s("RIONotify Error: %d\n", GetLastError());
-					ExitCode = 1;
-					next_CMD = CMD_EXIT;
-					break;
+				if (bRecvActive < 2) {
+					notifyResult = l_rio.RIONotify(completionQueue_Recv);
+					if (notifyResult != ERROR_SUCCESS)
+					{
+						printf_s("RIONotify Error: %d\n", GetLastError());
+						ExitCode = 1;
+						next_CMD = CMD_EXIT;
+						break;
+					}
+
+					bRecvActive = 2;
 				}
 
 				if (!GetQueuedCompletionStatus(hIOCPRecv, &numberOfBytes, &completionKey, &pOverlapped, recvTimeout))
 				{
 					if ((recvTimeout != INFINITE) && (pOverlapped == NULL)) {
-						//Receive-Timeout reached
+						//Receive-Timeout reached,	GetLastError() == WAIT_TIMEOUT
 						bRecvTimeOut = 1;
-
-						PostQueuedCompletionStatus(hIOCPRecv, 0, CK_CONTINUE, 0);
 
 						if ((OPMode == OP_CLIENT) || (OPMode == OP_CLIENTONLY)) {
 							if (next_CMD == CMD_WAIT_4_ACK)
 								next_CMD = OP_RESEND;
 							next_OPType = OP_SEND;
 						}
-						//Reset RIOBufferIndex for Addr-Buffers
-						l_recvRioBufIndex = l_addrRioBufIndex = l_sendRioBufIndex = 0;
-
+						//Reset RIOBufferIndex
+						l_sendRioBufIndex = 0;
 						continue;
 					}
 					else {
@@ -883,18 +886,13 @@ void* WorkerThread(void* ThreadParam) {
 					next_CMD = CMD_EXIT_MAINLOOP;
 					break;
 				}
-			}
-			else {
-				//if (debug)
-				//	printf("INFO: Waiting for Data...\n");
-			}
 
-			memset(results, 0, sizeof(results));
-			if (bNotify) {
+				memset(results, 0, sizeof(results));
+				
 				numResults = l_rio.RIODequeueCompletion(completionQueue_Recv, results, RIO_MAX_RESULTS);
-				bRecvActive = 0;
-			}
-			else {
+			} else {
+				memset(results, 0, sizeof(results));
+
 				recvStart = clock();
 				do {
 					numResults = l_rio.RIODequeueCompletion(completionQueue_Recv, results, RIO_MAX_RESULTS);
@@ -914,8 +912,8 @@ void* WorkerThread(void* ThreadParam) {
 							next_CMD = OP_RESEND;
 						next_OPType = OP_SEND;
 					}
-					//Reset RIOBufferIndex for Addr-Buffers
-					l_recvRioBufIndex = l_addrRioBufIndex = l_sendRioBufIndex = 0;
+					//Reset RIOBufferIndex
+					l_sendRioBufIndex = 0;
 
 					continue;
 				}
@@ -928,8 +926,12 @@ void* WorkerThread(void* ThreadParam) {
 					next_CMD = CMD_EXIT;
 					break;
 				}
-			} else
+			}
+			else {
 				bRecvActive = 0;
+				//Reset RIOBufferIndex for Addr-Buffers
+				//l_recvRioBufIndex = l_addrRioBufIndex = l_sendRioBufIndex = 0;
+			}
 
 			if (debug)
 				printf("INFO: %d Packets received.\n", numResults);
