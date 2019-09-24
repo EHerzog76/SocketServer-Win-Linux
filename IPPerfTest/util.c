@@ -1232,3 +1232,38 @@ int hash_key_cmp(pm_hash_key_t *a, pm_hash_key_t *b)
 
   return memcmp(a->val, b->val, b->len);
 }
+
+u_int64_t getTimeMSec() {
+#ifdef _WIN32
+	//FILETIME ft;
+	//u_int64_t time1;
+	//GetSystemTimeAsFileTime(&ft);
+	//return((((ULONGLONG)ft.dwHighDateTime) << 32) + ft.dwLowDateTime);
+
+	LARGE_INTEGER s_frequency;
+	BOOL s_use_qpc = QueryPerformanceFrequency(&s_frequency);
+	if (s_use_qpc) {
+		LARGE_INTEGER now;
+		QueryPerformanceCounter(&now);
+		return (1000LL * now.QuadPart) / s_frequency.QuadPart;
+	}
+	else {
+		return (u_int64_t)GetTickCount();
+	}
+
+	//SYSTEMTIME t;
+	//GetLocalTime(&t);
+	//t.wHour *3600000 + t.wMinute *60000 + t.wSecond *1000 + t.wMilliseconds;
+#else
+	struct timeval time;
+	gettimeofday(&time, NULL);
+
+	return (u_int64_t)time.tv_sec * 1000L + time.tv_usec / 1000;
+#endif
+}
+
+u_int64_t timeMSecDiff(struct timespec *timeA_p, struct timespec *timeB_p)
+{
+	return ((timeA_p->tv_sec * 1000000000) + timeA_p->tv_nsec) -
+		((timeB_p->tv_sec * 1000000000) + timeB_p->tv_nsec);
+}

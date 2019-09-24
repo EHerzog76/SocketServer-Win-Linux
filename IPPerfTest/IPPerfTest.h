@@ -224,8 +224,14 @@ struct ClientNode {
 	//u_int16_t port;
 	u_int64_t pktCounter;
 	u_int64_t errCounter;
+	u_int64_t retransmitCounter;
 	u_int64_t lastActPkt;
 	u_int64_t PktNr;
+	time_t sendTime;
+	time_t respTime;
+	u_int64_t minRTT;
+	u_int64_t avgRTT;
+	u_int64_t maxRTT;
 	tommy_node node;
 };
 

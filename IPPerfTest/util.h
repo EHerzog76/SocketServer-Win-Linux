@@ -122,6 +122,8 @@ EXT u_int16_t hash_serial_get_off(pm_hash_serial_t *);
 EXT u_int16_t hash_key_get_len(pm_hash_key_t *);
 EXT char *hash_key_get_val(pm_hash_key_t *);
 EXT int hash_key_cmp(pm_hash_key_t *, pm_hash_key_t *);
+EXT u_int64_t getTimeMSec();
+EXT u_int64_t timeMSecDiff(struct timespec *, struct timespec *);
 //EXT size_t curl_writefunc(void *, size_t, size_t, void *);
 //EXT bool postHTTPJsonData(char *, char *, char *, char *, CURL *);
 

@@ -28,9 +28,12 @@ typedef struct
 #endif
 	u_int64_t RecvCounter;
 	u_int64_t SendCounter;
+	u_int64_t retransmitCounter;
 	u_int64_t RecvBytes;
 	u_int64_t SendBytes;
-	/* ... */
+	u_int64_t minRTT;
+	u_int64_t avgRTT;
+	u_int64_t maxRTT;
 } ThreadParams;
 
 u_int32_t maxThreads = 0;
@@ -387,7 +390,7 @@ ULONG netSend(RIO_EXTENSION_FUNCTION_TABLE *pFNTable, RIORESULT *sendResults, HA
 		}
 
 		/// exit when CK_STOP
-		if (completionKey == CK_STOP) {
+		if (completionKey == (ULONG_PTR)CK_STOP) {
 			return(THREAD_EXIT);
 		}
 	}
@@ -421,12 +424,12 @@ void* WorkerThread(void* ThreadParam) {
 	struct host_addr addr;
 	char *sndBuffer = NULL;
 	char DataSrcKey[256];
-	unsigned long i = 0, offset = 0;
+	unsigned long i = 0, x = 0, offset = 0;
 	OPERATION_TYPE next_OPType = OP_NONE;
 	CMD next_CMD = CMD_NONE;
 	int PktPrefix = ThreadInfo->ThreadNr;
 	u_int32_t minPktLength = sizeof(PKT_HEADER) - sizeof(void*);
-	u_int64_t PktNr = 0, AckPktNr = 0; 
+	u_int64_t PktNr = 0, AckPktNr = 0, deltaTime = 0; 
 	PKT_HEADER pktHeader;
 	tommy_hashlin ClientLookup;
 	struct ClientNode *objClient = NULL, localClient;
@@ -610,12 +613,13 @@ void* WorkerThread(void* ThreadParam) {
 	RIO_BUFFERID l_recvBufferId;
 	RIO_BUFFERID l_addrBufferId;
 	INT notifyResult = 0;
-	DWORD numberOfBytes = 0, l_Flags = 0;
+	DWORD numberOfBytes = 0, l_Flags = 0, lastError = 0;
 	ULONG_PTR completionKey = 0;
 	OVERLAPPED* pOverlapped = 0;
 	OVERLAPPED rcvOverlapped;
+	OVERLAPPED_ENTRY rcvOverlappedEntries[64];
 	RIORESULT *results, *sendResults;
-	ULONG numResults = 0, numSendResults = 0;
+	ULONG numResults = 0, numSendResults = 0, maxOverlappedEntries = 64, recvOvEntries = 0;
 	EXTENDED_RIO_BUF* pBuffer = NULL, *sendBuf = NULL, *pRecvBufs = NULL, *pAddrBufs = NULL;
 	char *sendOffset = NULL, *recvOffset = NULL, *addrOffset = NULL, *BufferOffset = NULL;
 
@@ -820,7 +824,8 @@ void* WorkerThread(void* ThreadParam) {
 		tommy_hashlin_init(&ClientLookup);
 	}
 
-	localClient.errCounter = localClient.pktCounter = localClient.PktNr = localClient.lastActPkt = 0;
+	localClient.errCounter = localClient.retransmitCounter = localClient.pktCounter = localClient.PktNr = localClient.lastActPkt = localClient.avgRTT = localClient.maxRTT = 0;
+	localClient.minRTT = 0xFFFFFFFFFFFFFFFF;
 
 	ThreadInfo->RecvCounter = ThreadInfo->SendCounter = 0;
 	while (bRunning) {
@@ -858,9 +863,12 @@ void* WorkerThread(void* ThreadParam) {
 					bRecvActive = 2;
 				}
 
-				if (!GetQueuedCompletionStatus(hIOCPRecv, &numberOfBytes, &completionKey, &pOverlapped, recvTimeout))
+				//if (!GetQueuedCompletionStatus(hIOCPRecv, &numberOfBytes, &completionKey, &pOverlapped, recvTimeout))
+				if (!GetQueuedCompletionStatusEx(hIOCPRecv, &rcvOverlappedEntries, maxOverlappedEntries, &recvOvEntries, recvTimeout, FALSE))
 				{
-					if ((recvTimeout != INFINITE) && (pOverlapped == NULL)) {
+					lastError = GetLastError();
+					//if ((recvTimeout != INFINITE) && (pOverlapped == NULL)) {
+					if ((recvTimeout != INFINITE) && (lastError == WAIT_TIMEOUT)) {
 						//Receive-Timeout reached,	GetLastError() == WAIT_TIMEOUT
 						bRecvTimeOut = 1;
 
@@ -874,7 +882,7 @@ void* WorkerThread(void* ThreadParam) {
 						continue;
 					}
 					else {
-						printf_s("GetQueuedCompletionStatus Error: %d\n", GetLastError());
+						printf_s("GetQueuedCompletionStatusEx Error: %d\n", GetLastError());
 						ExitCode = 1;
 						next_CMD = CMD_EXIT;
 						break;
@@ -882,15 +890,23 @@ void* WorkerThread(void* ThreadParam) {
 				}
 
 				/// exit when CK_STOP
-				if (completionKey == CK_STOP) {
-					next_CMD = CMD_EXIT_MAINLOOP;
-					break;
-				}
+				// Code for GetQueuedCompletitionStatus:
+				//if (completionKey == (ULONG_PTR)CK_STOP) {
+				//	next_CMD = CMD_EXIT_MAINLOOP;
+				//	break;
+				//}
+				if (recvOvEntries != 0)
+					for (x = 0; x < recvOvEntries; x++) {
+						if (rcvOverlappedEntries[x].lpCompletionKey == (ULONG_PTR)CK_STOP) {
+							next_CMD = CMD_EXIT_MAINLOOP;
+							break;
+						}
+					}
 
 				memset(results, 0, sizeof(results));
 				
 				numResults = l_rio.RIODequeueCompletion(completionQueue_Recv, results, RIO_MAX_RESULTS);
-			} else {
+			} else {   /* End of    bNotify */
 				memset(results, 0, sizeof(results));
 
 				recvStart = clock();
@@ -960,6 +976,10 @@ void* WorkerThread(void* ThreadParam) {
 						objClient->lastActPkt = 0;
 						objClient->pktCounter = 0;
 						objClient->errCounter = 0;
+						objClient->retransmitCounter = 0;
+						objClient->minRTT = 0;
+						objClient->avgRTT = 0;
+						objClient->maxRTT = 0;
 						tommy_hashlin_insert(&ClientLookup, &objClient->node, objClient, tommy_hash_u64(0, &(((struct sockaddr_in *)&remoteClient)->sin_port), slen));
 					}
 
@@ -1000,8 +1020,9 @@ void* WorkerThread(void* ThreadParam) {
 									//	Send Ack for last received Packet...
 									l_sendRioBufIndex++;
 									sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
+									sendBuf->Length = PktSize;
 									sendOffset = l_sendBufferPointer + sendBuf->Offset;
-									memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer + offset, rc);
+									memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer, PktSize);
 
 									((PKT_HEADER*)sendOffset)->PktType = (char)PKT_ACK;
 									((PKT_HEADER*)sendOffset)->PktNr = htonll(objClient->PktNr);
@@ -1058,8 +1079,9 @@ void* WorkerThread(void* ThreadParam) {
 									//	Send Ack-Packet back to Client
 									l_sendRioBufIndex++;
 									sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
+									sendBuf->Length = PktSize;
 									sendOffset = l_sendBufferPointer + sendBuf->Offset;
-									memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer + offset, rc);
+									memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer, PktSize);
 
 									((PKT_HEADER*)sendOffset)->PktType = (char)PKT_ACK;
 									((PKT_HEADER*)sendOffset)->PktNr = htonll(objClient->PktNr);
@@ -1106,11 +1128,24 @@ void* WorkerThread(void* ThreadParam) {
 				else if ((OPMode == OP_CLIENT) || (OPMode == OP_CLIENTONLY)) {
 					if (next_CMD == CMD_WAIT_4_ACK) {
 						if (((PKT_HEADER *)recvOffset)->PktType == (char)PKT_ACK) {
+							localClient.respTime = getTimeMSec();
 							PktNr = pm_ntohll(((PKT_HEADER *)recvOffset)->PktNr);
 							localClient.lastActPkt = PktNr;
 
+							deltaTime = localClient.respTime - localClient.sendTime;
 							if (debug)
-								printf("INFO: Ack for PktNr.: %d received.\n", PktNr);
+								printf("INFO: Ack for PktNr.: %d received, RTT=%.2f.\n", PktNr, deltaTime);
+							if (localClient.minRTT > deltaTime)
+								localClient.minRTT = deltaTime;
+							else if (localClient.maxRTT < deltaTime)
+								localClient.maxRTT = deltaTime;
+							if (localClient.avgRTT == 0) {
+								localClient.avgRTT += deltaTime;
+							}
+							else {
+								localClient.avgRTT += deltaTime;
+								localClient.avgRTT = localClient.avgRTT / 2;
+							}
 
 							//if (localClient.lastActPkt < localClient.PktNr) {
 								//We have lost Packets...
@@ -1135,6 +1170,7 @@ void* WorkerThread(void* ThreadParam) {
 						//We have lost Packets...
 						//	resend this Packets
 						localClient.PktNr = localClient.lastActPkt;
+						localClient.retransmitCounter++;
 					}
 
 					next_CMD = CMD_NONE;
@@ -1155,13 +1191,15 @@ void* WorkerThread(void* ThreadParam) {
 			if (next_CMD == OP_RESEND) {
 				l_sendRioBufIndex++;
 				sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
+				sendBuf->Length = PktSize;
 				sendOffset = l_sendBufferPointer + sendBuf->Offset;
-				memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer, SEND_BUFFER_SIZE);
+				memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer, PktSize);
 
 				((PKT_HEADER*)sendOffset)->PktType = (char)PKT_DATARETRANSMIT;
 				((PKT_HEADER*)sendOffset)->PktNr = htonll(localClient.PktNr);
 				((PKT_HEADER*)sendOffset)->ThrNr = htonl(ThreadInfo->ThreadNr);
 				((PKT_HEADER*)sendOffset)->PktLength = htonll(PktSize);
+				localClient.sendTime = getTimeMSec();
 
 				if (!l_rio.RIOSendEx(l_requestQueue, sendBuf, 1, NULL, pAddrBufs, NULL, NULL, l_Flags, sendBuf))
 				{
@@ -1172,7 +1210,9 @@ void* WorkerThread(void* ThreadParam) {
 					printf("INFO: PktNr.: %d will be resent.\n", localClient.PktNr);
 
 				localClient.pktCounter++;
+				localClient.retransmitCounter++;
 				ThreadInfo->SendCounter++;
+				ThreadInfo->retransmitCounter++;
 				ThreadInfo->SendBytes += PktSize;
 
 				next_CMD = CMD_WAIT_4_ACK;
@@ -1197,6 +1237,7 @@ void* WorkerThread(void* ThreadParam) {
 				for (i = 0; i < l; i++) {
 					l_sendRioBufIndex++;
 					sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
+					sendBuf->Length = rc;
 					sendOffset = l_sendBufferPointer + sendBuf->Offset;
 					memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer + offset, rc);
 
@@ -1204,6 +1245,7 @@ void* WorkerThread(void* ThreadParam) {
 					((PKT_HEADER*)sendOffset)->PktNr = htonll(localClient.PktNr + 1 + i);
 					((PKT_HEADER*)sendOffset)->ThrNr = htonl(ThreadInfo->ThreadNr);
 					((PKT_HEADER*)sendOffset)->PktLength = htonll(PktSize);
+					localClient.sendTime = getTimeMSec();
 
 					if (!l_rio.RIOSendEx(l_requestQueue, sendBuf, 1, NULL, pAddrBufs, NULL, NULL, l_Flags, sendBuf))
 					{
@@ -1248,7 +1290,7 @@ void* WorkerThread(void* ThreadParam) {
 				}
 
 				/// exit when CK_STOP
-				if (completionKey == CK_STOP) {
+				if (completionKey == (ULONG_PTR)CK_STOP) {
 					next_CMD = CMD_EXIT_MAINLOOP;
 					break;
 				}
@@ -1337,6 +1379,10 @@ WorkerThreadEnd:
 
 	free(sndBuffer);
 
+	ThreadInfo->minRTT = localClient.minRTT;
+	ThreadInfo->avgRTT = localClient.avgRTT;
+	ThreadInfo->maxRTT = localClient.maxRTT;
+
 	if ((OPMode == OP_SERVER) || (OPMode == OP_SERVERONLY))
 	{
 		//Print Statistics
@@ -1391,7 +1437,7 @@ void  HandlerRoutine(int sig)
 
 void endprog(int ExitVal) {
 	u_int32_t i = 0;
-	u_int64_t RecvPkt = 0, SendPkt = 0, RecvByteSum = 0, SendByteSum = 0;
+	u_int64_t RecvPkt = 0, SendPkt = 0, RecvByteSum = 0, SendByteSum = 0, RetransSum = 0;
 
 	if (pThreadParams != NULL) {
 		for (i = 0; i < maxThreads; i++) {
@@ -1412,18 +1458,19 @@ void endprog(int ExitVal) {
 		}
 
 		//Print Statistics:
-		printf("Thread-Nr\tPackets-Recv\tPackets-Sent\tBytes-Recv\tBytes-Sent\n");
+		printf("Thread-Nr\tPackets-Recv\tPackets-Sent\tBytes-Recv\tBytes-Sent\tRetrans.\tmin-RTT\tavgRTT\tmaxRTT\n");
 		for (i = 0; i < maxThreads; i++) {
-			printf("%d\t%d\t%d\t%d\t%d\n", i, pThreadParams[i].RecvCounter, pThreadParams[i].SendCounter, pThreadParams[i].RecvBytes, pThreadParams[i].SendBytes);
+			printf("%*d\t%*d\t%*d\t%d\t%d\t%d\t%d\t%d\t%d\n", 9, i, 15, pThreadParams[i].RecvCounter, 15, pThreadParams[i].SendCounter, pThreadParams[i].RecvBytes, pThreadParams[i].SendBytes, pThreadParams[i].retransmitCounter, pThreadParams[i].minRTT, pThreadParams[i].avgRTT, pThreadParams[i].maxRTT);
 			RecvPkt += pThreadParams[i].RecvCounter;
 			SendPkt += pThreadParams[i].SendCounter;
 			RecvByteSum += pThreadParams[i].RecvBytes;
 			SendByteSum += pThreadParams[i].SendBytes;
+			RetransSum += pThreadParams[i].retransmitCounter;
 
 			pThreadParams[i].ThreadNr = -1;
 		}
-		printf("=================================================\n");
-		printf("Sum:\t%d\t%d\t%d\t%d\n", RecvPkt, SendPkt, RecvByteSum, SendByteSum);
+		printf("=======================================================================================================\n");
+		printf("Sum:     \t%*d\t%*d\t%d\t%d\t%d\n", 15, RecvPkt, 15, SendPkt, RecvByteSum, SendByteSum, RetransSum);
 		printf("Runtime (meassured with Clockcycles) was %f seconds.\n", runTime);
 		printf("Runtime (meassured with Timefunction) was %.2f seconds.\n", difftime(endTime1, startTime1));
 
