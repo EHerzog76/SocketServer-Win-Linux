@@ -863,13 +863,16 @@ void* WorkerThread(void* ThreadParam) {
 					bRecvActive = 2;
 				}
 
-				//if (!GetQueuedCompletionStatus(hIOCPRecv, &numberOfBytes, &completionKey, &pOverlapped, recvTimeout))
+#if defined RIOSINGELQUEUEMODE
+				if (!GetQueuedCompletionStatus(hIOCPRecv, &numberOfBytes, &completionKey, &pOverlapped, recvTimeout))
+#else
 				if (!GetQueuedCompletionStatusEx(hIOCPRecv, &rcvOverlappedEntries, maxOverlappedEntries, &recvOvEntries, recvTimeout, FALSE))
+#endif
 				{
 					lastError = GetLastError();
 					//if ((recvTimeout != INFINITE) && (pOverlapped == NULL)) {
 					if ((recvTimeout != INFINITE) && (lastError == WAIT_TIMEOUT)) {
-						//Receive-Timeout reached,	GetLastError() == WAIT_TIMEOUT
+						//Receive-Timeout reached
 						bRecvTimeOut = 1;
 
 						if ((OPMode == OP_CLIENT) || (OPMode == OP_CLIENTONLY)) {
@@ -882,7 +885,7 @@ void* WorkerThread(void* ThreadParam) {
 						continue;
 					}
 					else {
-						printf_s("GetQueuedCompletionStatusEx Error: %d\n", GetLastError());
+						printf_s("GetQueuedCompletionStatus(Ex) Error: %d\n", GetLastError());
 						ExitCode = 1;
 						next_CMD = CMD_EXIT;
 						break;
@@ -890,11 +893,12 @@ void* WorkerThread(void* ThreadParam) {
 				}
 
 				/// exit when CK_STOP
-				// Code for GetQueuedCompletitionStatus:
-				//if (completionKey == (ULONG_PTR)CK_STOP) {
-				//	next_CMD = CMD_EXIT_MAINLOOP;
-				//	break;
-				//}
+#if defined RIOSINGELQUEUEMODE
+				if (completionKey == (ULONG_PTR)CK_STOP) {
+					next_CMD = CMD_EXIT_MAINLOOP;
+					break;
+				}
+#else
 				if (recvOvEntries != 0)
 					for (x = 0; x < recvOvEntries; x++) {
 						if (rcvOverlappedEntries[x].lpCompletionKey == (ULONG_PTR)CK_STOP) {
@@ -902,7 +906,7 @@ void* WorkerThread(void* ThreadParam) {
 							break;
 						}
 					}
-
+#endif
 				memset(results, 0, sizeof(results));
 				
 				numResults = l_rio.RIODequeueCompletion(completionQueue_Recv, results, RIO_MAX_RESULTS);
@@ -1134,7 +1138,7 @@ void* WorkerThread(void* ThreadParam) {
 
 							deltaTime = localClient.respTime - localClient.sendTime;
 							if (debug)
-								printf("INFO: Ack for PktNr.: %d received, RTT=%.2f.\n", PktNr, deltaTime);
+								printf("INFO: Ack for PktNr.: %d received, RTT=%lldus.\n", PktNr, deltaTime);
 							if (localClient.minRTT > deltaTime)
 								localClient.minRTT = deltaTime;
 							else if (localClient.maxRTT < deltaTime)
@@ -1460,7 +1464,7 @@ void endprog(int ExitVal) {
 		//Print Statistics:
 		printf("Thread-Nr\tPackets-Recv\tPackets-Sent\tBytes-Recv\tBytes-Sent\tRetrans.\tmin-RTT\tavgRTT\tmaxRTT\n");
 		for (i = 0; i < maxThreads; i++) {
-			printf("%*d\t%*d\t%*d\t%d\t%d\t%d\t%d\t%d\t%d\n", 9, i, 15, pThreadParams[i].RecvCounter, 15, pThreadParams[i].SendCounter, pThreadParams[i].RecvBytes, pThreadParams[i].SendBytes, pThreadParams[i].retransmitCounter, pThreadParams[i].minRTT, pThreadParams[i].avgRTT, pThreadParams[i].maxRTT);
+			printf("%*d\t%*d\t%*d\t%d\t%d\t%d\t%lld\t%lld\t%lld\n", 9, i, 15, pThreadParams[i].RecvCounter, 15, pThreadParams[i].SendCounter, pThreadParams[i].RecvBytes, pThreadParams[i].SendBytes, pThreadParams[i].retransmitCounter, pThreadParams[i].minRTT, pThreadParams[i].avgRTT, pThreadParams[i].maxRTT);
 			RecvPkt += pThreadParams[i].RecvCounter;
 			SendPkt += pThreadParams[i].SendCounter;
 			RecvByteSum += pThreadParams[i].RecvBytes;

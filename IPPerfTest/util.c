@@ -1245,7 +1245,7 @@ u_int64_t getTimeMSec() {
 	if (s_use_qpc) {
 		LARGE_INTEGER now;
 		QueryPerformanceCounter(&now);
-		return (1000LL * now.QuadPart) / s_frequency.QuadPart;
+		return (1000000LL * now.QuadPart) / s_frequency.QuadPart;
 	}
 	else {
 		return (u_int64_t)GetTickCount();
@@ -1258,7 +1258,8 @@ u_int64_t getTimeMSec() {
 	struct timeval time;
 	gettimeofday(&time, NULL);
 
-	return (u_int64_t)time.tv_sec * 1000L + time.tv_usec / 1000;
+	//return (u_int64_t)time.tv_sec * 1000L + time.tv_usec /1000;	//millisec.
+	return (u_int64_t)time.tv_sec * 1000000L + time.tv_usec;		//microsec.
 #endif
 }
 

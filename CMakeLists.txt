@@ -10,6 +10,9 @@ project ("IPPerfTest")
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
+#add_compile_definitions(RIOSINGELQUEUEMODE)
+add_definitions(-DNRIOSINGELQUEUEMODE)
+
 #include_directories(
 #  ${ONNXRUNTIME_INCLUDE_DIR} 
 #  ${REPO_ROOT}/include/onnxruntime/core/session
