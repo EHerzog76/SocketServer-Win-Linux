@@ -964,7 +964,7 @@ void* WorkerThread(void* ThreadParam) {
 				recvOffset = l_recvBufferPointer + pBuffer->Offset;
 
 				if ((OPMode == OP_SERVER) || (OPMode == OP_SERVERONLY)) {
-					pAddrBufs = &(l_addrRioBufs[l_addrRioBufIndex % l_addrRioBufTotalCount]);
+					pAddrBufs = &(l_addrRioBufs[l_addrRioBufIndex]);  // % l_addrRioBufTotalCount
 					addrOffset = l_addrBufferPointer + pAddrBufs->Offset;
 					//ToDo:
 					//	IPv6 is missing
@@ -1010,7 +1010,7 @@ void* WorkerThread(void* ThreadParam) {
 
 							//Set Target-Address:
 							l_addrRioBufIndex++;
-							pAddrBufs = &(l_addrRioBufs[l_addrRioBufIndex % l_addrRioBufTotalCount]);
+							pAddrBufs = &(l_addrRioBufs[l_addrRioBufIndex]); // % l_addrRioBufTotalCount
 							addrOffset = l_addrBufferPointer + pAddrBufs->Offset;
 							memcpy_s(addrOffset, ADDR_BUFFER_SIZE, &(objClient->client), sizeof(objClient->client));
 
@@ -1023,7 +1023,7 @@ void* WorkerThread(void* ThreadParam) {
 								if (WndSize) {
 									//	Send Ack for last received Packet...
 									l_sendRioBufIndex++;
-									sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
+									sendBuf = &(l_sendRioBufs[l_sendRioBufIndex]); // % l_sendRioBufTotalCount
 									sendBuf->Length = PktSize;
 									sendOffset = l_sendBufferPointer + sendBuf->Offset;
 									memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer, PktSize);
@@ -1082,7 +1082,7 @@ void* WorkerThread(void* ThreadParam) {
 									(((PKT_HEADER *)recvOffset)->PktType == (char)PKT_DATARETRANSMIT) ) {
 									//	Send Ack-Packet back to Client
 									l_sendRioBufIndex++;
-									sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
+									sendBuf = &(l_sendRioBufs[l_sendRioBufIndex]);  // % l_sendRioBufTotalCount
 									sendBuf->Length = PktSize;
 									sendOffset = l_sendBufferPointer + sendBuf->Offset;
 									memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer, PktSize);
@@ -1188,13 +1188,13 @@ void* WorkerThread(void* ThreadParam) {
 		case OP_SEND:
 			//Set Target-Address:
 			l_addrRioBufIndex++;
-			pAddrBufs = &(l_addrRioBufs[l_addrRioBufIndex % l_addrRioBufTotalCount]);
+			pAddrBufs = &(l_addrRioBufs[l_addrRioBufIndex]);  // % l_addrRioBufTotalCount
 			addrOffset = l_addrBufferPointer + pAddrBufs->Offset;
 			memcpy_s(addrOffset, ADDR_BUFFER_SIZE, &remoteServer, sizeof(remoteServer));
 
 			if (next_CMD == OP_RESEND) {
 				l_sendRioBufIndex++;
-				sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
+				sendBuf = &(l_sendRioBufs[l_sendRioBufIndex]);  // % l_sendRioBufTotalCount
 				sendBuf->Length = PktSize;
 				sendOffset = l_sendBufferPointer + sendBuf->Offset;
 				memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer, PktSize);
@@ -1240,7 +1240,7 @@ void* WorkerThread(void* ThreadParam) {
 				offset = 0;
 				for (i = 0; i < l; i++) {
 					l_sendRioBufIndex++;
-					sendBuf = &(l_sendRioBufs[l_sendRioBufIndex % l_sendRioBufTotalCount]);
+					sendBuf = &(l_sendRioBufs[l_sendRioBufIndex]);  // % l_sendRioBufTotalCount
 					sendBuf->Length = rc;
 					sendOffset = l_sendBufferPointer + sendBuf->Offset;
 					memcpy_s(sendOffset, SEND_BUFFER_SIZE, sndBuffer + offset, rc);
@@ -1462,7 +1462,8 @@ void endprog(int ExitVal) {
 		}
 
 		//Print Statistics:
-		printf("Thread-Nr\tPackets-Recv\tPackets-Sent\tBytes-Recv\tBytes-Sent\tRetrans.\tmin-RTT\tavgRTT\tmaxRTT\n");
+		printf("min-, avg- and max-RTT are in microseconds.\n");
+		printf("Thread-Nr\tPackets-Recv\tPackets-Sent\tBytes-Recv\tBytes-Sent\tRetrans.\tmin-RTT\tavg-RTT\tmax-RTT\n");
 		for (i = 0; i < maxThreads; i++) {
 			printf("%*d\t%*d\t%*d\t%d\t%d\t%d\t%lld\t%lld\t%lld\n", 9, i, 15, pThreadParams[i].RecvCounter, 15, pThreadParams[i].SendCounter, pThreadParams[i].RecvBytes, pThreadParams[i].SendBytes, pThreadParams[i].retransmitCounter, pThreadParams[i].minRTT, pThreadParams[i].avgRTT, pThreadParams[i].maxRTT);
 			RecvPkt += pThreadParams[i].RecvCounter;
