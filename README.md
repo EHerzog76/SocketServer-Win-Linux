@@ -6,16 +6,16 @@ In the current version the main focus was to use the RIO-Networkfunctions on Win
 ## Usage examples for Windows:
 ### Throughput-Test:
 	Servermode:
-		IPPerfTest.exe -P UDP -L 0.0.0.0 -p 3000 -w 0 -T 1 -l 64 [-N]
+		IPPerfTest.exe -P UDP -L 0.0.0.0 -p 3000 -w 0 -T 1 -l 64 [-N] [-C]
 
 	Clientmode:
-		IPPerfTest.exe -P UDP -S <Server-IP> -s 3000 -w 0 -T 2 -l 64 [-N]
+		IPPerfTest.exe -P UDP -S <Server-IP> -s 3000 -w 0 -T 2 -l 64 [-N] [-C]
 ### Receive-/Transmit-Test:
 	Servermode:
-		IPPerfTest.exe -P UDP -L 0.0.0.0 -p 3000 -w 1 -T 1 -l 64 -t 2 [-N]
+		IPPerfTest.exe -P UDP -L 0.0.0.0 -p 3000 -w 1 -T 1 -l 64 -t 2 [-N] [-C]
 
 	Clientmode:
-		IPPerfTest.exe -P UDP -S <Server-IP> -s 3000 -w 1 -T 2 -l 64 -t 2 [-N]
+		IPPerfTest.exe -P UDP -S <Server-IP> -s 3000 -w 1 -T 2 -l 64 -t 2 [-N] [-C]
 
 ### Arguments:
 ```

@@ -69,7 +69,7 @@ POSIX_ONLY(#include <sys/mman.h>)
 #include "tommyhashlin.h"
 
 /* defines */
-#define ARGS_IPPERF "n:dhVNYC:P:L:p:S:s:l:w:T:t:"
+#define ARGS_IPPERF "n:dhVNYCZ:P:L:p:S:s:l:w:T:t:"
 #define PKT_SIZE		1400
 #define ETH_ADDR_LEN    	6               /* Octets in one ethernet addr   */
 #define ETHER_HDRLEN    	14
